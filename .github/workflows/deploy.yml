@@ -1,0 +1,55 @@
+name: Deploy
+
+on:
+  push:
+    branches: [ "master", "main" ]
+
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/python-crud
+
+jobs:
+  test:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build container
+        run: |
+          podman build -t kubsu/python-crud-dev:latest .
+
+      - name: Run tests
+        env:
+          DATABASE_URL: "postgresql+psycopg://kubsu:kubsu@localhost:5432/kubsu"
+          PYTHONPATH: .
+        run: |
+          podman run --rm --network=host -e DATABASE_URL="postgresql+psycopg://kubsu:kubsu@localhost:5432/kubsu" -e PYTHONPATH=. kubsu/python-crud-dev:latest python -m pytest -v tests/
+
+  build-and-push:
+    needs: test
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        run: |
+          podman login -u "${{ secrets.DOCKERHUB_USERNAME }}" -p "${{ secrets.DOCKERHUB_TOKEN }}" docker.io
+
+      - name: Build and push
+        run: |
+          podman build -t ${{ env.DOCKER_IMAGE }}:latest .
+          podman build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} .
+          podman push ${{ env.DOCKER_IMAGE }}:latest
+          podman push ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: self-hosted
+    steps:
+      - name: Deploy to server
+        run: |
+          podman stop python-crud || true
+          podman rm python-crud || true
+          podman run -d --name python-crud --network host ${{ env.DOCKER_IMAGE }}:latest
+          echo "Container has been deployed successfully!"
