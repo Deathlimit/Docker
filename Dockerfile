@@ -1,23 +1,21 @@
-FROM python:3.10-slim as builder
+FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY pyproject.toml .
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --user --no-cache-dir -e .[test]
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml .
+RUN uv pip install --system --no-cache -r pyproject.toml --extra test
 
 COPY src/ ./src/
 COPY tests/ ./tests/
 
-FROM python:3.10-slim
+EXPOSE 8022
 
-WORKDIR /app
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8022/health')" || exit 1
 
-COPY --from=builder /root/.local /root/.local
-COPY --from=builder /app /app
-
-ENV PATH=/root/.local/bin:$PATH
-
-EXPOSE 8087
-
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8087"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8022"]

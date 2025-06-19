@@ -1,0 +1,142 @@
+name: CI/CD
+
+on:
+  push:
+    branches: ["main", "master"]
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/python-crud
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: kubsu
+          POSTGRES_PASSWORD: kubsu
+          POSTGRES_DB: kubsu
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test
+        run: |
+          docker build -t test-image .
+          docker run --rm --network host \
+            -e DATABASE_URL="postgresql+psycopg://kubsu:kubsu@localhost:5432/kubsu" \
+            test-image python -m pytest -v tests/
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Build and push
+        run: |
+          echo "Building Docker image from repository..."
+          echo "Commit: ${{ github.sha }}"
+          echo "Date: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          
+          docker build --no-cache -t ${{ env.IMAGE_NAME }}:latest \
+            --label "org.opencontainers.image.source=${{ github.repositoryUrl }}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            .
+          
+          echo "Tagging image with SHA..."
+          docker tag ${{ env.IMAGE_NAME }}:latest ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          
+          echo "Pushing to Docker Hub..."
+          docker push ${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          
+          echo "Image pushed successfully!"
+          echo "Image tags:"
+          echo "  - ${{ env.IMAGE_NAME }}:latest"
+          echo "  - ${{ env.IMAGE_NAME }}:${{ github.sha }}"
+
+  deploy:
+    needs: build
+    runs-on: self-hosted
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            echo "Creating postgres data directory..."
+            mkdir -p /var/lib/kubsu/postgres_data
+            
+            echo "Starting PostgreSQL container..."
+            podman stop kubsu-postgres || true
+            podman rm kubsu-postgres || true
+            podman run -d --name kubsu-postgres \
+              --network host \
+              -e POSTGRES_USER=kubsu \
+              -e POSTGRES_PASSWORD=kubsu \
+              -e POSTGRES_DB=kubsu \
+              -v /var/lib/kubsu/postgres_data:/var/lib/postgresql/data \
+              postgres:15-alpine
+            
+            echo "Waiting for PostgreSQL to start..."
+            sleep 10
+            
+            echo "Checking PostgreSQL connection..."
+            nc -zv localhost 5432 || echo "PostgreSQL not accessible on localhost:5432"
+            
+            echo "Cleaning up old app images..."
+            podman rmi ${{ env.IMAGE_NAME }}:latest || true
+            
+            echo "Force pulling latest app image..."
+            podman pull --disable-compression ${{ env.IMAGE_NAME }}:latest
+            
+            echo "Image info:"
+            podman inspect ${{ env.IMAGE_NAME }}:latest --format '{{.Created}}' || echo "No image info"
+            podman inspect ${{ env.IMAGE_NAME }}:latest --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' || echo "No revision info"
+            
+            echo "Stopping old app container..."
+            podman stop python-crud || true
+            podman rm --force python-crud || true
+            
+            echo "Starting new app container..."
+            podman run -d --name python-crud --network host --replace \
+              -e DATABASE_URL="postgresql+psycopg://kubsu:kubsu@localhost:5432/kubsu" \
+              --label "deployment.commit=${{ github.sha }}" \
+              --label "deployment.date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+              ${{ env.IMAGE_NAME }}:latest
+            
+            echo "Waiting 8 seconds for app to start..."
+            sleep 8
+            
+            echo "Container status:"
+            podman ps -a --filter name=python-crud
+            podman ps -a --filter name=kubsu-postgres
+            
+            echo "App container logs:"
+            podman logs python-crud --tail 20
+            
+            echo "Health check:"
+            curl -f http://localhost:8022/health || echo "Health check failed"
+            
+            echo "Root endpoint check:"
+            curl -f http://localhost:8022/ || echo "Root endpoint failed"
+            
+            echo "Deployment completed!"
+            echo "Deployed app: ${{ env.IMAGE_NAME }}:${{ github.sha }}"
+            echo "PostgreSQL data: /var/lib/kubsu/postgres_data"

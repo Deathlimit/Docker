@@ -1,0 +1,34 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: kubsu
+      POSTGRES_PASSWORD: kubsu
+      POSTGRES_DB: kubsu
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kubsu -d kubsu"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    ports:
+      - "8022:8022"
+    environment:
+      DATABASE_URL: postgresql+psycopg://kubsu:kubsu@db:5432/kubsu
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src:ro
+
+volumes:
+  postgres_data:
