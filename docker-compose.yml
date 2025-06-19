@@ -21,7 +21,7 @@ services:
   app:
     build: .
     ports:
-      - "8022:8022"
+      - "8087:8087"
     environment:
       DATABASE_URL: postgresql+psycopg://kubsu:kubsu@db:5432/kubsu
     depends_on:
