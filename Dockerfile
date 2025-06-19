@@ -13,9 +13,9 @@ RUN uv pip install --system --no-cache -r pyproject.toml --extra test
 COPY src/ ./src/
 COPY tests/ ./tests/
 
-EXPOSE 8022
+EXPOSE 8087
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8022/health')" || exit 1
+    CMD python -c "import requests; requests.get('http://localhost:8087/health')" || exit 1
 
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8022"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8087"]
