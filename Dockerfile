@@ -1,14 +1,13 @@
-FROM python:3.11-slim
+FROM python:3.11-alpine
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache postgresql-dev gcc musl-dev
 
 RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml .
-RUN uv pip install --system --no-cache -r pyproject.toml --extra test
+RUN uv pip install --system --no-cache -r pyproject.toml --extra test && apk del gcc musl-dev
 
 COPY src/ ./src/
 COPY tests/ ./tests/
